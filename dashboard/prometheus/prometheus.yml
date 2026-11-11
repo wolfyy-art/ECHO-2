@@ -1,0 +1,13 @@
+# Prometheus Configuration for ECHO Monitoring
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "echo_endpoint_monitor"
+    static_configs:
+      - targets: ["localhost:9108"]
+        labels:
+          module: "M4"
+          subsystem: "host_orchestration"
+          environment: "demo"
