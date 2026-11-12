@@ -24,7 +24,7 @@ class TestCollectorConfig(unittest.TestCase):
         self.assertEqual(config.default_duration, 0.0)
         self.assertTrue(config.collect_network)
         self.assertEqual(config.batch_size, 500)
-        self.assertTrue(str(config.db_path).endswith("data/echo.db"))
+        self.assertTrue(str(config.db_path).replace("\\", "/").endswith("data/echo.db"))
 
     def test_explicit_valid_values(self):
         """Verify custom values supplied directly to constructor."""
