@@ -138,17 +138,150 @@ class DemoDataAdapter:
             username=fixture.get("username", "vboxuser"),
         )
 
-        ml_score = fixture.get("ml_anomaly_score")
-        beh_score = fixture.get("behavioural_score")
-        res_score = fixture.get("resource_anomaly_score")
+        return telemetry, detection
 
+
+class M2ModelAdapter:
+    """
+    Adapter converting real M2 Isolation Forest inference outputs and 13-feature vectors
+    into standard M3 input schemas (ProcessTelemetryInput, DetectionSignalInput).
+    """
+
+    APPROVED_FEATURES = [
+        "cpu_mean",
+        "cpu_max",
+        "cpu_std",
+        "memory_mean",
+        "memory_max",
+        "memory_rss_mean",
+        "num_threads_mean",
+        "num_threads_max",
+        "open_sockets_count",
+        "distinct_remote_ips",
+        "sample_count",
+        "cpu_mem_ratio",
+        "socket_thread_ratio",
+    ]
+
+    @classmethod
+    def validate_and_extract_features(cls, record: Dict[str, Any]):
+        """
+        Extract and validate the exact 13 approved features for ML inference.
+        
+        Checks:
+        - All 13 approved features must be present.
+        - Preserves strict feature order matching models/metadata.json.
+        - Rejects None, NaN, and Infinite values.
+        - Returns a 1-row DataFrame ready for model.score_samples().
+        """
+        import pandas as pd
+        import numpy as np
+
+        missing = [col for col in cls.APPROVED_FEATURES if col not in record]
+        if missing:
+            raise ValueError(f"Feature vector validation failed: missing required features: {missing}")
+
+        row_dict = {}
+        for col in cls.APPROVED_FEATURES:
+            val = record[col]
+            if val is None:
+                raise ValueError(f"Feature vector validation failed: column '{col}' has null value.")
+            val_float = float(val)
+            if np.isnan(val_float) or np.isinf(val_float):
+                raise ValueError(f"Feature vector validation failed: column '{col}' has NaN or Infinite value.")
+            row_dict[col] = [val_float]
+
+        df_row = pd.DataFrame(row_dict)[cls.APPROVED_FEATURES]
+        return df_row
+
+    @classmethod
+    def from_m2_inference(
+        cls,
+        record: Dict[str, Any],
+        model,
+        event_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
+    ) -> Tuple[ProcessTelemetryInput, DetectionSignalInput]:
+        """
+        Execute actual Isolation Forest model inference on the 13 approved features,
+        standardizing scores into M3's scale [0.0, 100.0].
+
+        Parameters
+        ----------
+        record : Dict[str, Any]
+            Dictionary containing process metadata and the 13 approved features.
+        model : ProcessIsolationForest
+            Fitted M2 Isolation Forest model.
+        event_id : Optional[str]
+            Optional event ID.
+        timestamp : Optional[str]
+            Optional observation timestamp.
+
+        Returns
+        -------
+        Tuple[ProcessTelemetryInput, DetectionSignalInput]
+            Validated telemetry and real ML detection signal.
+        """
+        if not hasattr(model, "is_fitted") or not model.is_fitted:
+            raise RuntimeError("Cannot perform M2 inference: Isolation Forest model is not fitted.")
+
+        # 1. Validate and extract exact 13-feature matrix row
+        df_row = cls.validate_and_extract_features(record)
+
+        # 2. Execute Model Inference
+        # score_samples returns S in [0.0, 1.0] where < 0.50 is normal and > 0.50 is anomalous
+        raw_scores = model.score_samples(df_row)
+        raw_labels = model.predict_labels(df_row)
+
+        if len(raw_scores) == 0:
+            raise RuntimeError("Model inference returned empty score vector.")
+
+        score_unit = float(raw_scores[0])
+        label_int = int(raw_labels[0])
+
+        # 3. Standardize score into M3's 0-100 range:
+        # Monotonic linear scale: 0.0 -> 0.0, 0.50 (threshold) -> 50.0, 1.0 -> 100.0
+        standardized_ml_score = round(score_unit * 100.0, 2)
+        ml_label = "anomaly" if label_int == -1 else "normal"
+
+        # 4. Construct Telemetry
+        pid = int(record["pid"])
+        pname = str(record["process_name"])
+        telemetry = ProcessTelemetryInput(
+            event_id=event_id,
+            pid=pid,
+            process_name=pname,
+            ppid=record.get("ppid"),
+            process_start_time=record.get("process_start_time") or timestamp,
+            cpu_percent=float(record.get("cpu_mean", 0.0)),
+            memory_percent=float(record.get("memory_mean", 0.0)),
+            memory_rss=int(record.get("memory_rss_mean", 0)),
+            open_sockets_count=int(record.get("open_sockets_count", 0)),
+            distinct_remote_ips=int(record.get("distinct_remote_ips", 0)),
+            num_threads=int(record.get("num_threads_max", 1)),
+            username=record.get("username", "vboxuser"),
+            timestamp=timestamp,
+            exe_path=record.get("exe_path"),
+            parent_name=record.get("parent_name"),
+        )
+
+        # 5. Construct Detection Signal
         detection = DetectionSignalInput(
-            ml_anomaly_score=ml_score,
-            behavioural_score=beh_score,
-            resource_anomaly_score=res_score,
-            is_simulated=True,
-            model_metadata={"source": "test_detection.py_fixture", "simulated": True},
-            detection_timestamp=ts,
+            ml_anomaly_score=standardized_ml_score,
+            ml_label=ml_label,
+            behavioural_score=None,
+            resource_anomaly_score=None,
+            is_simulated=False, # REAL ML INFERENCE
+            model_metadata={
+                "model_type": "IsolationForest",
+                "version": "1.0.0",
+                "raw_unit_score": score_unit,
+                "prediction_label": label_int,
+                "score_offset": float(model.score_offset_),
+                "features_validated": cls.APPROVED_FEATURES,
+                "is_simulated": False,
+            },
+            detection_timestamp=timestamp,
         )
 
         return telemetry, detection

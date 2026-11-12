@@ -44,6 +44,8 @@ class ProcessTelemetryInput:
     timestamp: Optional[str] = None
     host_id: Optional[str] = None
     event_id: Optional[str] = None
+    exe_path: Optional[str] = None
+    parent_name: Optional[str] = None
 
     def __post_init__(self):
         if not self.event_id:
@@ -113,6 +115,7 @@ class CorrelatedSignal:
     prior_anomaly_count: int = 0
     is_repeated_anomaly: bool = False
     parent_is_suspicious: bool = False
+    is_duplicate: bool = False
     timestamp: str = field(default_factory=_utc_now_str)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -126,6 +129,7 @@ class CorrelatedSignal:
             "prior_anomaly_count": self.prior_anomaly_count,
             "is_repeated_anomaly": self.is_repeated_anomaly,
             "parent_is_suspicious": self.parent_is_suspicious,
+            "is_duplicate": self.is_duplicate,
             "timestamp": self.timestamp,
         }
 

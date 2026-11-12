@@ -2,7 +2,7 @@
   "model_type": "IsolationForest",
   "algorithm": "scikit-learn.ensemble.IsolationForest",
   "version": "1.0.0",
-  "trained_at_utc": "2026-11-12T08:20:27.538302Z",
+  "trained_at_utc": "2026-11-12T15:25:16.928562Z",
   "training_samples": 280,
   "unique_processes": 7,
   "approved_features": [

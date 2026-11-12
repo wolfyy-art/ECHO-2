@@ -132,6 +132,66 @@ class TestPolicyEngine(unittest.TestCase):
         args_approved = ActionMapper.map_to_response_args(dec_restrict, operator_approved=True)
         self.assertEqual(args_approved["approval_status"], "approved")
 
+    def test_missing_parent_event_handled_safely(self):
+        """If parent event is not registered and has no metadata, failure is recorded safely without unhandled exception."""
+        orphan_dec = PolicyDecision(
+            decision_id="dec-orphan-1",
+            event_id="evt-does-not-exist-in-db",
+            pid=7711,
+            process_name="orphan_proc",
+            process_identity="type::vboxuser::orphan_proc",
+            risk_score=85.0,
+            risk_level="high",
+            recommended_action="simulate_restriction",
+            requires_approval=True,
+            is_protected=False,
+            reason="High risk orphan",
+            context_metadata={}, # No telemetry attached
+        )
+        outcome = self.policy_engine.execute_and_verify(orphan_dec, operator_approved=True)
+        self.assertEqual(outcome["response"]["result"], "failed")
+        self.assertIn("M4 Precondition Failed", outcome["response"]["error_message"])
+
+    def test_missing_parent_event_autoregistered_with_telemetry(self):
+        """If parent event is not in db but telemetry is in context, M3 auto-registers it and executes response."""
+        dec_with_telem = PolicyDecision(
+            decision_id="dec-auto-1",
+            event_id="evt-auto-registered-001",
+            pid=7722,
+            process_name="auto_proc",
+            process_identity="type::vboxuser::auto_proc",
+            risk_score=85.0,
+            risk_level="high",
+            recommended_action="simulate_restriction",
+            requires_approval=True,
+            is_protected=False,
+            reason="High risk auto",
+            context_metadata={
+                "telemetry": {
+                    "cpu_percent": 88.0,
+                    "memory_percent": 12.0,
+                }
+            },
+        )
+        outcome = self.policy_engine.execute_and_verify(dec_with_telem, operator_approved=True)
+        self.assertEqual(outcome["response"]["result"], "success")
+        self.assertEqual(outcome["response"]["action_type"], "simulate_restriction")
+
+    def test_provisional_high_risk_never_restricts(self):
+        """Provisional high-risk decision must recommend alert, NEVER restrictive containment."""
+        corr = self._make_correlated(pid=5005, name="suspicious_unscored")
+        risk_provisional = RiskScoreResult(
+            risk_score=78.0,
+            risk_level="high",
+            is_provisional=True,
+            missing_signals=["ML anomaly score (M)"],
+        )
+        decision = self.rules.evaluate(corr, risk_provisional)
+        self.assertEqual(decision.recommended_action, "alert")
+        self.assertNotEqual(decision.recommended_action, "simulate_restriction")
+        self.assertTrue(decision.requires_approval)
+        self.assertIn("missing signals", decision.reason.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

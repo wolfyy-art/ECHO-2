@@ -220,11 +220,18 @@ class ProcessContextManager:
         self,
         telemetry: ProcessTelemetryInput,
         risk_result: RiskScoreResult,
+        is_duplicate: bool = False,
     ) -> ProcessInstanceRecord:
         """
         Record a new observation and risk score in the process context.
+        If is_duplicate is True, existing instance record is returned without incrementing
+        observation counters or duplicating risk scores.
         """
         record, is_new = self.get_or_create_instance(telemetry)
+        if is_duplicate:
+            logger.debug("Duplicate event '%s' suppressed from updating process history.", telemetry.event_id)
+            return record
+
         if not is_new:
             record.record_observation(risk_result, telemetry.timestamp)
         else:

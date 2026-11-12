@@ -16,6 +16,12 @@ class TestRiskEngineScoring(unittest.TestCase):
     def setUp(self):
         self.engine = RiskEngine()
 
+    def test_default_canonical_weights(self):
+        """RiskEngineConfig must default to canonical ECHO-2 formula: 40/40/20."""
+        self.assertAlmostEqual(self.engine.config.w_ml, 0.40)
+        self.assertAlmostEqual(self.engine.config.w_behavioural, 0.40)
+        self.assertAlmostEqual(self.engine.config.w_resource, 0.20)
+
     def test_all_normal_scores(self):
         """All low scores should yield a low risk score and 'low' level."""
         detection = DetectionSignalInput(
@@ -24,7 +30,7 @@ class TestRiskEngineScoring(unittest.TestCase):
             resource_anomaly_score=5.0,
         )
         result = self.engine.calculate_risk(detection)
-        expected = (0.40 * 10.0) + (0.35 * 15.0) + (0.25 * 5.0) # 4 + 5.25 + 1.25 = 10.5
+        expected = (0.40 * 10.0) + (0.40 * 15.0) + (0.20 * 5.0) # 4 + 6 + 1 = 11.0
         self.assertAlmostEqual(result.risk_score, expected, places=2)
         self.assertEqual(result.risk_level, "low")
         self.assertFalse(result.is_provisional)
@@ -37,16 +43,16 @@ class TestRiskEngineScoring(unittest.TestCase):
             resource_anomaly_score=80.0,
         )
         result = self.engine.calculate_risk(detection)
-        expected = (0.40 * 90.0) + (0.35 * 85.0) + (0.25 * 80.0) # 36 + 29.75 + 20 = 85.75
+        expected = (0.40 * 90.0) + (0.40 * 85.0) + (0.20 * 80.0) # 36 + 34 + 16 = 86.0
         self.assertAlmostEqual(result.risk_score, expected, places=2)
         self.assertEqual(result.risk_level, "high")
         self.assertFalse(result.is_provisional)
 
     def test_prompt_reference_example(self):
         """
-        Verify the exact example from project prompt:
+        Verify canonical multi-signal correlation formula:
         ML = 90, Behavioural = 80, Resource/network = 70
-        R = (0.40 * 90) + (0.35 * 80) + (0.25 * 70) = 81.5 -> HIGH
+        R = (0.40 * 90) + (0.40 * 80) + (0.20 * 70) = 82.0 -> HIGH
         """
         detection = DetectionSignalInput(
             ml_anomaly_score=90.0,
@@ -54,9 +60,9 @@ class TestRiskEngineScoring(unittest.TestCase):
             resource_anomaly_score=70.0,
         )
         result = self.engine.calculate_risk(detection)
-        self.assertEqual(result.risk_score, 81.5)
+        self.assertEqual(result.risk_score, 82.0)
         self.assertEqual(result.risk_level, "high")
-        self.assertIn("R=81.5", result.explanation)
+        self.assertIn("R=82.0", result.explanation)
 
     def test_score_normalization_unit_interval(self):
         """0.0 - 1.0 float scales should be normalized to 0.0 - 100.0."""
@@ -66,7 +72,7 @@ class TestRiskEngineScoring(unittest.TestCase):
             resource_anomaly_score=0.70,
         )
         result = self.engine.calculate_risk(detection)
-        self.assertEqual(result.risk_score, 81.5)
+        self.assertEqual(result.risk_score, 82.0)
         self.assertEqual(result.risk_level, "high")
         self.assertEqual(result.ml_score_normalized, 90.0)
         self.assertEqual(result.behavioural_score_normalized, 80.0)
@@ -90,9 +96,9 @@ class TestRiskEngineScoring(unittest.TestCase):
             resource_anomaly_score=60.0,
         )
         result = self.engine.calculate_risk(detection)
-        # Weights: behavioural=0.35, resource=0.25 -> total 0.60
-        # effective: beh = 0.35/0.60, res = 0.25/0.60
-        expected = ((0.35 / 0.60) * 80.0) + ((0.25 / 0.60) * 60.0)
+        # Weights: behavioural=0.40, resource=0.20 -> total 0.60
+        # effective: beh = 0.40/0.60, res = 0.20/0.60
+        expected = ((0.40 / 0.60) * 80.0) + ((0.20 / 0.60) * 60.0)
         self.assertAlmostEqual(result.risk_score, round(expected, 2), places=1)
         self.assertTrue(result.is_provisional)
         self.assertIn("ML anomaly score (M)", result.missing_signals)
@@ -124,7 +130,7 @@ class TestRiskEngineScoring(unittest.TestCase):
         self.assertTrue(result.is_provisional)
 
     def test_contextual_resource_anomaly_estimation(self):
-        """High CPU alone with no network/threads should NOT trigger high resource score."""
+        """High CPU alone with no contextual violations yields Q=0.0 to prevent double-counting."""
         telem_compiler = ProcessTelemetryInput(
             pid=2001,
             process_name="gcc",
@@ -133,23 +139,41 @@ class TestRiskEngineScoring(unittest.TestCase):
             open_sockets_count=0,
             distinct_remote_ips=0,
             num_threads=2,
+            exe_path="/usr/bin/gcc",
+            parent_name="bash",
         )
         q_compiler = self.engine.estimate_resource_anomaly(telem_compiler)
-        self.assertLess(q_compiler, 40.0) # High compute alone is bounded
+        self.assertEqual(q_compiler, 0.0) # Zero double-counting on clean compilers
 
-        # High CPU WITH network sockets and external IPs (like a botnet or miner)
+        # Suspicious volatile path + miner name + socket burst
         telem_miner = ProcessTelemetryInput(
             pid=2002,
             process_name="miner",
             cpu_percent=95.0,
             memory_percent=10.0,
-            open_sockets_count=4,
-            distinct_remote_ips=3,
+            open_sockets_count=45,
+            distinct_remote_ips=25,
             num_threads=40,
+            exe_path="/tmp/.miner_payload",
+            parent_name="bash",
         )
         q_miner = self.engine.estimate_resource_anomaly(telem_miner)
         self.assertGreater(q_miner, 60.0)
         self.assertGreater(q_miner, q_compiler)
+
+    def test_negative_weights_raise_value_error(self):
+        """Individual negative weights must raise ValueError."""
+        with self.assertRaises(ValueError):
+            RiskEngineConfig(weight_ml=-0.40, weight_behavioural=0.40, weight_resource=0.20)
+        with self.assertRaises(ValueError):
+            RiskEngineConfig(weight_ml=0.40, weight_behavioural=-0.40, weight_resource=0.20)
+        with self.assertRaises(ValueError):
+            RiskEngineConfig(weight_ml=0.40, weight_behavioural=0.40, weight_resource=-0.20)
+
+    def test_zero_total_weight_raises_value_error(self):
+        """Total weight equal to 0.0 must raise ValueError."""
+        with self.assertRaises(ValueError):
+            RiskEngineConfig(weight_ml=0.0, weight_behavioural=0.0, weight_resource=0.0)
 
     def test_invalid_negative_score_raises(self):
         """Negative scores must raise ValueError."""

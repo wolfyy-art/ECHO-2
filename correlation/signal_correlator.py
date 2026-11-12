@@ -83,12 +83,34 @@ class SignalCorrelator:
             and repeated anomaly flags.
         """
         # 1. Deduplication check
-        if self._is_duplicate_event(telemetry.event_id):
-            logger.debug("Event %s is duplicate; continuing correlation for re-evaluation.", telemetry.event_id)
+        is_duplicate = self._is_duplicate_event(telemetry.event_id)
+        if is_duplicate:
+            logger.warning(
+                "Event '%s' is duplicate; suppressing re-processing to prevent observation inflation.",
+                telemetry.event_id,
+            )
 
         # 2. Ensure detection signal exists
         if detection is None:
             detection = DetectionSignalInput(is_simulated=False)
+
+        # 3. Timestamp tolerance check
+        if telemetry.timestamp and detection.detection_timestamp:
+            try:
+                t_telem = datetime.fromisoformat(telemetry.timestamp.replace("Z", "+00:00"))
+                t_det = datetime.fromisoformat(detection.detection_timestamp.replace("Z", "+00:00"))
+                delta_sec = abs((t_telem - t_det).total_seconds())
+                if delta_sec > self.time_tolerance_seconds:
+                    logger.warning(
+                        "Timestamp tolerance exceeded for event '%s': delta=%.1fs > tolerance=%.1fs",
+                        telemetry.event_id, delta_sec, self.time_tolerance_seconds
+                    )
+                    if detection.model_metadata is None:
+                        detection.model_metadata = {}
+                    detection.model_metadata["is_stale"] = True
+                    detection.model_metadata["timestamp_skew_seconds"] = delta_sec
+            except Exception as exc:
+                logger.debug("Could not calculate timestamp delta: %s", exc)
 
         # 3. Build canonical identities
         type_id = build_process_type_identity(
@@ -131,6 +153,7 @@ class SignalCorrelator:
             prior_anomaly_count=prior_anomalies,
             is_repeated_anomaly=is_repeated,
             parent_is_suspicious=parent_suspicious,
+            is_duplicate=is_duplicate,
             timestamp=telemetry.timestamp,
         )
 

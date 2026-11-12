@@ -119,6 +119,7 @@ class PolicyRules:
                 context_metadata={
                     "protection_reason": protect_reason,
                     "is_provisional": risk.is_provisional,
+                    "telemetry": correlated.telemetry.to_dict(),
                 },
             )
 
@@ -153,6 +154,7 @@ class PolicyRules:
                 context_metadata={
                     "is_provisional": True,
                     "missing_signals": risk.missing_signals,
+                    "telemetry": correlated.telemetry.to_dict(),
                 },
             )
 
@@ -210,6 +212,7 @@ class PolicyRules:
                 "prior_anomalies": correlated.prior_anomaly_count,
                 "repeated_anomaly": correlated.is_repeated_anomaly,
                 "parent_suspicious": correlated.parent_is_suspicious,
+                "telemetry": correlated.telemetry.to_dict(),
             },
         )
 

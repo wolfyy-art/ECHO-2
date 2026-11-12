@@ -88,9 +88,40 @@ class PolicyEngine:
         Dict[str, Any]
             Full lifecycle summary: decision, response_action, verification.
         """
-        # 1. Optionally insert alert into alerts table for medium/high events
+        # 1. Coordinate with M4 contract: verify parent event exists in process_events
+        conn = _get_connection(self.db_path)
+        event_exists = False
+        try:
+            row = conn.execute("SELECT 1 FROM process_events WHERE event_id = ?", (decision.event_id,)).fetchone()
+            event_exists = bool(row)
+        finally:
+            conn.close()
+
+        # If parent event is missing, auto-ingest via M4's public API if telemetry metadata was passed in context
+        if not event_exists and "telemetry" in decision.context_metadata:
+            telem_data = decision.context_metadata["telemetry"]
+            try:
+                from dashboard.database import insert_process_event
+                insert_process_event(
+                    event_id=decision.event_id,
+                    pid=decision.pid,
+                    process_name=decision.process_name,
+                    process_start_time=telem_data.get("process_start_time", decision.timestamp),
+                    cpu_percent=float(telem_data.get("cpu_percent", 0.0)),
+                    memory_percent=float(telem_data.get("memory_percent", 0.0)),
+                    risk_level=decision.risk_level,
+                    anomaly_score=decision.risk_score / 100.0,
+                    timestamp=decision.timestamp,
+                    db_path=self.db_path,
+                )
+                event_exists = True
+                logger.info("Auto-registered parent event %s in process_events for M4 contract.", decision.event_id)
+            except Exception as exc:
+                logger.warning("Could not auto-register missing parent event %s: %s", decision.event_id, exc)
+
+        # 2. Optionally insert alert into alerts table for medium/high events
         alert_record = None
-        if record_alert and decision.risk_level in {"medium", "high"}:
+        if event_exists and record_alert and decision.risk_level in {"medium", "high"}:
             alert_id = f"alrt-{uuid.uuid4().hex[:12]}"
             severity = decision.risk_level # 'medium' or 'high'
             try:
@@ -106,10 +137,27 @@ class PolicyEngine:
                 alert_record = {"alert_id": alert_id, "severity": severity, "status": "open"}
                 logger.info("Recorded security alert %s for event %s", alert_id, decision.event_id)
             except Exception as exc:
-                # If parent event doesn't exist yet in process_events table, log warning
-                logger.warning("Could not persist alert to database (parent event may not be committed): %s", exc)
+                logger.warning("Could not persist alert to database: %s", exc)
 
-        # 2. Dispatch response action via M4 ResponseEngine
+        # 3. Dispatch response action via M4 ResponseEngine if parent event exists
+        if not event_exists:
+            err_msg = (
+                f"M4 Precondition Failed: Event '{decision.event_id}' does not exist in 'process_events'. "
+                f"Under M4 interface contract, telemetry must be recorded prior to response action dispatch."
+            )
+            logger.error(err_msg)
+            return {
+                "decision": decision.to_dict(),
+                "alert": None,
+                "response": {
+                    "action_id": None,
+                    "event_id": decision.event_id,
+                    "result": "failed",
+                    "error_message": err_msg,
+                },
+                "verification": None,
+            }
+
         response_result = ActionMapper.execute_mapped_response(
             decision=decision,
             response_engine=self.response_engine,

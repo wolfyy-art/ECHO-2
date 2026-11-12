@@ -39,8 +39,8 @@ class RiskEngineConfig:
     def __init__(
         self,
         weight_ml: float = 0.40,
-        weight_behavioural: float = 0.35,
-        weight_resource: float = 0.25,
+        weight_behavioural: float = 0.40,
+        weight_resource: float = 0.20,
         low_threshold: float = 30.0,
         high_threshold: float = 70.0,
         missing_strategy: str = "provisional_rescale",
@@ -51,9 +51,9 @@ class RiskEngineConfig:
         weight_ml : float
             Weight for ML anomaly score (M). Default 0.40.
         weight_behavioural : float
-            Weight for Behavioural MAD score (A). Default 0.35.
+            Weight for Behavioural MAD score (A). Default 0.40.
         weight_resource : float
-            Weight for Resource/Network score (Q). Default 0.25.
+            Weight for Resource/Network score (Q). Default 0.20.
         low_threshold : float
             Threshold below which risk is 'low'. Default 30.0.
         high_threshold : float
@@ -61,6 +61,11 @@ class RiskEngineConfig:
         missing_strategy : str
             Strategy for missing signals: 'provisional_rescale' (default) or 'strict_insufficient'.
         """
+        if weight_ml < 0.0 or weight_behavioural < 0.0 or weight_resource < 0.0:
+            raise ValueError(
+                f"Individual weights must be non-negative: "
+                f"weight_ml={weight_ml}, weight_behavioural={weight_behavioural}, weight_resource={weight_resource}"
+            )
         total_w = weight_ml + weight_behavioural + weight_resource
         if total_w <= 0.0:
             raise ValueError("Sum of weights must be greater than 0.")
@@ -145,44 +150,58 @@ class RiskEngine:
         else:
             return "high"
 
+    # Suspicious paths and naming conventions for contextual evidence (Q)
+    SUSPICIOUS_PATHS = ("/tmp", "/dev/shm", "/var/tmp", "/run/user", "temp")
+    SUSPICIOUS_SHELLS = ("sh", "bash", "zsh", "dash", "powershell.exe", "cmd.exe")
+    SUSPICIOUS_PARENTS = ("nginx", "apache2", "httpd", "mysqld", "postgres")
+
     def estimate_resource_anomaly(
         self,
         telemetry: ProcessTelemetryInput,
     ) -> float:
         """
-        Context-aware resource & network anomaly score (Q) in [0.0, 100.0].
+        Independent contextual anomaly score (Q) in [0.0, 100.0].
         
-        Important:
-        - High CPU alone does NOT imply dangerous activity (e.g. compilation, rendering).
-        - Spikes in CPU or memory are combined with network socket activity and thread counts.
-        - Abnormal pattern: High compute + multiple open sockets + external IPs + high thread churn.
+        Design (Zero Double-Counting):
+        - Raw CPU, memory, socket counts, and thread metrics are already modeled by the
+          13 features of M2's Isolation Forest and M2's MAD Behavioural Baselines.
+        - Q focuses strictly on independent contextual and environmental evidence:
+          1. Execution from volatile / writable directories (/tmp, /dev/shm) (+35.0)
+          2. Server daemon unexpectedly spawning interactive shells (+40.0)
+          3. Process name concealment (hidden dotfiles or miner strings) (+30.0)
+          4. Extreme un-profiled socket burst (>= 40 sockets or >= 20 remote IPs) (+25.0)
+        - Normal compute-heavy or network-heavy processes with legitimate parentage and standard
+          paths (e.g. compilers, rsync backups) evaluate to Q = 0.0, eliminating false positives.
         """
-        cpu = max(0.0, min(100.0, float(telemetry.cpu_percent)))
-        mem = max(0.0, min(100.0, float(telemetry.memory_percent)))
-        sockets = max(0, int(telemetry.open_sockets_count))
-        remote_ips = max(0, int(telemetry.distinct_remote_ips))
-        threads = max(1, int(telemetry.num_threads))
+        score = 0.0
 
-        # Base compute load (0 to 30 points)
-        compute_load = (0.6 * cpu + 0.4 * mem) * 0.30
+        pname = (telemetry.process_name or "").strip().lower()
+        path = (getattr(telemetry, "exe_path", None) or "").strip().lower()
+        parent = (getattr(telemetry, "parent_name", None) or "").strip().lower()
+        sockets = max(0, int(telemetry.open_sockets_count or 0))
+        remote_ips = max(0, int(telemetry.distinct_remote_ips or 0))
 
-        # Network exposure (0 to 45 points)
-        # Sockets with remote connections indicate active network communication
-        net_score = 0.0
-        if sockets > 0:
-            net_score += min(20.0, sockets * 4.0)
-        if remote_ips > 0:
-            net_score += min(25.0, remote_ips * 8.0)
+        # 1. Volatile execution path check
+        for susp_path in self.SUSPICIOUS_PATHS:
+            if susp_path in path:
+                score += 35.0
+                break
 
-        # Thread anomaly (0 to 25 points)
-        thread_score = 0.0
-        if threads > 32:
-            thread_score = min(25.0, (threads - 32) * 0.5)
+        # 2. Server daemon spawning interactive shell
+        if parent in self.SUSPICIOUS_PARENTS and pname in self.SUSPICIOUS_SHELLS:
+            score += 40.0
 
-        # Contextual multiplier:
-        # If high CPU is present alongside network activity, the suspicion increases
-        suspicion = compute_load + net_score + thread_score
-        return round(min(100.0, max(0.0, suspicion)), 2)
+        # 3. Process naming concealment or miner signatures
+        if pname.startswith(".") or "miner" in pname or "xmr" in pname:
+            score += 30.0
+
+        # 4. Extreme socket burst exceeding typical host boundaries
+        if sockets >= 40:
+            score += 25.0
+        elif remote_ips >= 20:
+            score += 20.0
+
+        return round(min(100.0, max(0.0, score)), 2)
 
     def calculate_risk(
         self,

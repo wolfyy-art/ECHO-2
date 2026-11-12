@@ -20,7 +20,7 @@ from correlation.process_context import (
     ProcessInstanceRecord,
 )
 from correlation.signal_correlator import SignalCorrelator
-from correlation.adapters import DemoDataAdapter
+from correlation.adapters import DemoDataAdapter, M2ModelAdapter
 from correlation.storage import CorrelationStorage
 
 __all__ = [
@@ -35,5 +35,6 @@ __all__ = [
     "ProcessInstanceRecord",
     "SignalCorrelator",
     "DemoDataAdapter",
+    "M2ModelAdapter",
     "CorrelationStorage",
 ]
