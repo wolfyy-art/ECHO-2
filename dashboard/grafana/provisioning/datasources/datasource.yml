@@ -1,11 +1,25 @@
 apiVersion: 1
 
+# Grafana Datasource Configuration for ECHO
+#
+# IMPORTANT: Grafana must query Prometheus (port 9090), NOT the ECHO exporter
+# (port 9108).  The exporter serves raw OpenMetrics text for Prometheus to
+# scrape.  Grafana uses the Prometheus HTTP query API (/api/v1/query_range)
+# which is only available on the Prometheus server itself.
+#
+# Deployment-specific URL:
+#   Docker Compose (service name resolution):  http://prometheus:9090
+#   Bare-metal / local development:            http://localhost:9090
+#
+# This file is configured for bare-metal / local development.
+# Change the url below to http://prometheus:9090 for Docker Compose deployments.
+
 datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
     orgId: 1
-    url: http://localhost:9108
+    url: http://localhost:9090
     isDefault: true
     version: 1
     editable: false

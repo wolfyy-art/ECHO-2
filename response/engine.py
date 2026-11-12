@@ -50,7 +50,7 @@ class ResponseEngine:
         event_id: str,
         action_type: str,
         execution_mode: str = "simulation",
-        approval_status: str = "approved",
+        approval_status: str = "pending",
         action_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -66,7 +66,10 @@ class ResponseEngine:
         execution_mode : str
             'simulation' (default) or 'live'.
         approval_status : str
-            'pending', 'approved', or 'rejected'.
+            'pending' (default), 'approved', or 'rejected'.
+            Restrictive actions (simulate_restriction, investigate,
+            notify_operator) will not execute unless approval_status is
+            'approved'.  Missing approval must never be treated as approval.
         action_id : Optional[str]
             Optional action ID; auto-generated with UUID4 if omitted.
 
@@ -101,7 +104,21 @@ class ResponseEngine:
 
         if not allowed:
             logger.warning("Response action %s blocked: %s", action_id, rejection_reason)
-            result = "skipped" if approval_status == "rejected" else "failed"
+            # Determine the correct result code:
+            # - "skipped": action is awaiting operator approval (pending) or was
+            #              explicitly rejected — these are soft policy gates.
+            # - "failed":  hard safety violation (protected process, invalid mode,
+            #              or unknown action type) — these are non-negotiable blocks.
+            #
+            # Distinguish by inspecting the rejection reason: approval-gate blocks
+            # always contain "pending" or "rejected" in the reason text from
+            # SafetyChecker.  Safety violations always contain "Safety Violation".
+            is_approval_gate = (
+                rejection_reason is not None
+                and "Safety Violation" not in rejection_reason
+                and approval_status in {"rejected", "pending"}
+            )
+            result = "skipped" if is_approval_gate else "failed"
             insert_response_action(
                 action_id=action_id,
                 event_id=event_id,

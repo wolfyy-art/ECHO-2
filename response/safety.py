@@ -8,6 +8,15 @@ Enforces zero-harm safety constraints for host response actions:
 - Never permits actions on protected system PIDs (0, 1) or critical OS daemons.
 - Requires explicit operator approval for high-impact containment actions.
 - Enforces strict simulation mode safeguards to prevent accidental system changes.
+
+Approval Policy
+---------------
+Restrictive actions (simulate_restriction, investigate, notify_operator) require
+explicit operator approval (approval_status == "approved") before execution.
+Harmless actions (alert, log_only) may proceed without prior approval.
+
+Missing approval (approval_status == "pending") is treated as unapproved for
+restrictive actions.  It must never be silently interpreted as approval.
 """
 
 import os
@@ -31,6 +40,14 @@ PROTECTED_PROCESS_NAMES = {
     # Development runtime protections
     "python", "python3", "code", "antigravity"
 }
+
+# Action types that require explicit operator approval before execution.
+# "alert" and "log_only" are harmless and may proceed without prior approval.
+APPROVAL_REQUIRED_ACTIONS: frozenset = frozenset({
+    "simulate_restriction",
+    "investigate",
+    "notify_operator",
+})
 
 
 def is_protected_process(pid: int, process_name: str) -> Tuple[bool, Optional[str]]:
@@ -101,10 +118,19 @@ class SafetyChecker:
         if action_type not in valid_actions:
             return False, f"Invalid action_type: '{action_type}'"
 
-        # 4. Approval check for restrictive / high-impact actions
-        if action_type == "simulate_restriction":
+        # 4. Approval check for restrictive / high-impact actions.
+        # Only "alert" and "log_only" are harmless enough to proceed without
+        # explicit operator approval.  Everything else requires approval_status
+        # == "approved".  "pending" must never be treated as approval.
+        if action_type in APPROVAL_REQUIRED_ACTIONS:
             if approval_status == "rejected":
-                return False, "Action skipped: operator rejected approval."
-            # If pending, policy allows queueing or simulation with explicit dry-run flag
+                return False, "Action blocked: operator explicitly rejected this action."
+            if approval_status == "pending":
+                return False, (
+                    f"Action blocked: '{action_type}' requires explicit operator approval. "
+                    f"Current status is 'pending'. Submit the action for operator review."
+                )
+            if approval_status != "approved":
+                return False, f"Action blocked: unrecognised approval_status '{approval_status}'."
 
         return True, None

@@ -11,7 +11,7 @@ Implements controlled updating of process behavioural baselines:
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd

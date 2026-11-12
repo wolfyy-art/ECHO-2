@@ -16,7 +16,7 @@ import sys
 import time
 import logging
 from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Sequence
 from pathlib import Path
 import numpy as np
 import pandas as pd
