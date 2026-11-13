@@ -1,0 +1,33 @@
+{
+  "model_type": "IsolationForest",
+  "algorithm": "scikit-learn.ensemble.IsolationForest",
+  "version": "1.0.0",
+  "trained_at_utc": "2026-11-13T05:52:31.001364Z",
+  "data_source": "synthetic",
+  "training_samples": 280,
+  "unique_processes": 7,
+  "approved_features": [
+    "cpu_mean",
+    "cpu_max",
+    "cpu_std",
+    "memory_mean",
+    "memory_max",
+    "memory_rss_mean",
+    "num_threads_mean",
+    "num_threads_max",
+    "open_sockets_count",
+    "distinct_remote_ips",
+    "sample_count",
+    "cpu_mem_ratio",
+    "socket_thread_ratio"
+  ],
+  "hyperparameters": {
+    "n_estimators": 100,
+    "random_state": 42,
+    "max_samples": "auto",
+    "contamination": 0.05
+  },
+  "decision_offset": -0.6025261157001371,
+  "artifact_path": "isolation_forest.joblib",
+  "features_csv": "process_features.csv"
+}
